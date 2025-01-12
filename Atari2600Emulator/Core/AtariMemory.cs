@@ -25,6 +25,10 @@ namespace Atari2600Emulator.Core
         {
             Array.Clear(ROM, 0, ROM.Length);
             Array.Copy(romData, 0, ROM, 0, Math.Min(romData.Length, ROM.Length));
+
+            ushort startAddress = 0xF000;
+            ROM[0x0FFC] = (byte)(startAddress & 0xFF);
+            ROM[0x0FFD] = (byte)((startAddress >> 8) & 0xFF);
         }
 
         public byte ReadByte(ushort address)

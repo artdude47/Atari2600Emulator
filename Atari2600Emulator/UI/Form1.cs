@@ -10,7 +10,17 @@ namespace Atari2600Emulator
         public Form1()
         {
             InitializeComponent();
+            RedirectConsoleOutput();
             InitializeEmulator();
+        }
+
+        private void RedirectConsoleOutput()
+        {
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput())
+            {
+                AutoFlush = true,
+            });
+            Console.SetError(Console.Out);
         }
 
         private void InitializeEmulator()
@@ -35,6 +45,10 @@ namespace Atari2600Emulator
                         ResetEmulator(romData);
 
                         Console.WriteLine("ROM loaded successfully!");
+                        MessageBox.Show($"Success!", "Success");
+
+
+                        ExecuteROM();
                     }
                     catch (Exception ex)
                     {
@@ -50,6 +64,16 @@ namespace Atari2600Emulator
             _memory.LoadROM(romData);
 
             _cpu.Reset();
+        }
+
+        private void ExecuteROM()
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                _cpu.Step();
+            }
+
+            MessageBox.Show("ROM FINISHED RUNNING");
         }
     }
 }
