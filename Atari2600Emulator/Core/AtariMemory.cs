@@ -11,6 +11,7 @@ namespace Atari2600Emulator.Core
         private byte[] RAM;     //128 bytes of RIOT RAM
         private byte[] ROM;     //ROM data
         private byte[] TIA;     //TIA Registers
+        public byte[] VideoBuffer { get; private set; }
 
         public AtariMemory(byte[] romData)
         {
@@ -18,6 +19,7 @@ namespace Atari2600Emulator.Core
             RAM = new byte[128];
             TIA = new byte[128];
             ROM = new byte[4096];
+            VideoBuffer = new byte[160 * 192];
             LoadROM(romData);
         }
 
@@ -42,11 +44,31 @@ namespace Atari2600Emulator.Core
 
         public void WriteByte(ushort address, byte value)
         {
-            // (Implementation unchanged)
-            if (address <= 0x007F) TIA[address] = value;
+            if (address <= 0x007F) // TIA Registers
+            {
+                TIA[address] = value;
+
+                if (address == 0x09)
+                {
+                    UpdateBackgroundColor(value);
+                }
+            }
             else if (address >= 0x0080 && address <= 0x00FF) RAM[address - 0x0080] = value;
             else if (address >= 0x1000 && address <= 0x107F) RAM[(address - 0x1000) % 128] = value;
             else throw new ArgumentOutOfRangeException(nameof(address), $"Address {address:X4} is out of range.");
+        }
+
+        public void ClearVideoBuffer()
+        {
+            Array.Clear(VideoBuffer, 0, VideoBuffer.Length);
+        }
+
+        private void UpdateBackgroundColor(byte color)
+        {
+            for (int i = 0; i < VideoBuffer.Length; i++)
+            {
+                VideoBuffer[i] = color;
+            }
         }
     }
 }
