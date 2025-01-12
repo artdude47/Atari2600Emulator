@@ -16,6 +16,15 @@ namespace Atari2600Emulator.Core
         private byte SP;        //Stack Pointer
         private byte P;         //Processor Status
 
+        // Flags
+        private const byte FLAG_CARRY = 0x01;
+        private const byte FLAG_ZERO = 0x02;
+        private const byte FLAG_INTERRUPT = 0x04;
+        private const byte FLAG_DECIMAL = 0x08;
+        private const byte FLAG_BREAK = 0x10;
+        private const byte FLAG_OVERFLOW = 0x40;
+        private const byte FLAG_NEGATIVE = 0x80;
+
         public CPU6507(AtariMemory memory)
         {
             _memory = memory;
@@ -46,5 +55,6 @@ namespace Atari2600Emulator.Core
                 default:
                     throw new NotImplementedException($"Opcode {opcode:X2} not implemented");
             }
+        }
     }
 }
