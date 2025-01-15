@@ -1,6 +1,9 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -8,873 +11,627 @@ namespace Atari2600Emulator.Core
 {
     internal class CPU6507
     {
-        private AtariMemory _memory;
-
+        // ---------------------------------------------------------------------------------------------------------------
         //Registers
+        // ---------------------------------------------------------------------------------------------------------------
+
         private byte A, X, Y;   //Accumulator, Index Registers
         private ushort PC;      //Program counter
         private byte SP;        //Stack Pointer
         private byte P;         //Processor Status
 
-        // Flags
+        // ---------------------------------------------------------------------------------------------------------------
+        // Flags in the Processor Status Register (P)
+        // ---------------------------------------------------------------------------------------------------------------
         private const byte FLAG_CARRY = 0x01;
         private const byte FLAG_ZERO = 0x02;
         private const byte FLAG_INTERRUPT = 0x04;
         private const byte FLAG_DECIMAL = 0x08;
         private const byte FLAG_BREAK = 0x10;
+        // bit 5 is unused in 6502
         private const byte FLAG_OVERFLOW = 0x40;
         private const byte FLAG_NEGATIVE = 0x80;
 
-        private bool _halted = false;
-
-        public bool Halted { get { return _halted; } }
+        // Reference to memory
+        private AtariMemory _memory;
 
         public CPU6507(AtariMemory memory)
         {
             _memory = memory;
-            Reset();
         }
 
-        public void Reset()
-        {
-            PC = (ushort)(_memory.ReadByte(0xFFFC) | (_memory.ReadByte(0xFFFD) << 8));
-            SP = 0xFF;
-            P = 0x34;
-            Console.WriteLine($"Reset Vector Loaded: PC = {PC:X4}");
-        }
-
-        public void Step()
+        // ---------------------------------------------------------------------------------------------------------------
+        //The Step method fetches the opcodes, decodes them, executes them,
+        //then returns # of cpu cycles used
+        // ---------------------------------------------------------------------------------------------------------------
+        public int Step()
         {
             byte opcode = _memory.ReadByte(PC);
             PC++;
 
-            Console.WriteLine($"Opcode: {opcode:X2}");
-
-            DecodeAndExecuteOpcode(opcode);
-            PrintState();
+            return DecodeAndExecuteOpcode(opcode);
         }
 
-        private void DecodeAndExecuteOpcode(byte opcode)
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // Executes the opcodes then return # of cpu cycles
+        // ---------------------------------------------------------------------------------------------------------------
+        private int DecodeAndExecuteOpcode(byte opcode)
         {
+            byte value;
+            bool pageBoundaryCrossed = false;
+
             switch (opcode)
             {
                 case 0xEA: //NOP
-                    break;
+                    return 0;
 
-                case 0xA9: // LDA Immediate
-                    A = GetImmediateValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                #region ADC Opcodes
 
-                case 0xA5: // LDA Zero Page
-                    A = GetZeroPageValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0xAD: // LDA Absolute
-                    A = GetAbsoluteValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0xB5: //LDA Zero Page, X
-                    A = GetZeroPageXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0xBD: // LDA Absolute, X
-                    A = GetAbsoluteXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0xB9: //LDA Absolute, Y
-                    A = GetAbsoluteYValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x85: // STA Zero Page
-                    WriteZeroPage(A);
-                    break;
-
-                case 0x8D:
-                    WriteAbsolute(A);
-                    break;
-
-                case 0x95: // STA Zero Page, X
-                    WriteZeroPageX(A);
-                    break;
-
-                case 0x9D: // STA Absolute, X
-                    WriteAbsoluteX(A);
-                    break;
-
-                case 0x99: //STA Absolute, Y
-                    WriteAbsoluteY(A);
-                    break;
-
-                case 0x69: // ADC Immediate
-                    AddWithCarry(GetImmediateValue());
-                    break;
+                case 0x69: //ADC Immediate
+                    value = ReadImmediate();
+                    ADC(value);
+                    return 2; // 2 cycles
 
                 case 0x65: // ADC Zero Page
-                    AddWithCarry(GetZeroPageValue());
-                    break;
-
-                case 0x6D: // ADC Absolute
-                    AddWithCarry(GetAbsoluteValue());
-                    break;
+                    value = ReadZeroPage();
+                    ADC(value);
+                    return 3; // 3 cycles
 
                 case 0x75: // ADC Zero Page, X
-                    AddWithCarry(GetZeroPageXValue());
-                    break;
+                    value = ReadZeroPageX();
+                    ADC(value);
+                    return 4; // 4 cycles
 
-                case 0x7D: // ADC Absolute, X
-                    AddWithCarry(GetAbsoluteXValue());
-                    break;
+                case 0x6D: // ADC Absolute
+                    value = ReadAbsolute();
+                    ADC(value);
+                    return 4; // 4 cycles
 
-                case 0xF0: // BEQ
-                    if ((P & FLAG_ZERO) != 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
+                case 0x7D: // ADC Absolute, X (4 cycles + 1 if page crossed)
+                    value = ReadAbsoluteX(out pageBoundaryCrossed);
+                    ADC(value);
+                    // if page bondary is crossed, add 1 cycle
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0xD0: // BNE
-                    if ((P & FLAG_ZERO) == 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
+                case 0x79: // ADC Absolute, Y
+                    value = ReadAbsoluteY(out pageBoundaryCrossed);
+                    ADC(value);
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0xB0: // BCS
-                    if ((P & FLAG_CARRY) != 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
+                case 0x61: //ADC (Indirect, X)
+                    value = ReadIndirectX();
+                    ADC(value);
+                    return 6; // 6 cycles
 
-                case 0x90: // BCC
-                    if ((P & FLAG_CARRY) == 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
+                case 0x71: //ADC (Indirect, Y), 5 cycles + 1 if page crossed
+                    value = ReadIndirectY(out pageBoundaryCrossed);
+                    ADC(value);
+                    return 5 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0x30: // BMI
-                    if ((P & FLAG_NEGATIVE) != 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
+                #endregion
 
-                case 0x10: // BPL
-                    if ((P & FLAG_NEGATIVE) == 0)
-                        Branch();
-                    else
-                        PC++;
-                    break;
-
-                case 0xE9: // SBC Immediate
-                    SubtractWithCarry(GetImmediateValue());
-                    break;
-
-                case 0xE5: // SBC Zero Page
-                    SubtractWithCarry(GetZeroPageValue());
-                    break;
-
-                case 0xED: // SBC Absolute
-                    SubtractWithCarry(GetAbsoluteValue());
-                    break;
-
-                case 0xF5: // SBC Zero Page, X
-                    SubtractWithCarry(GetZeroPageXValue());
-                    break;
-
-                case 0xFD: // SBC Absolute, X
-                    SubtractWithCarry(GetAbsoluteXValue());
-                    break;
-
-                case 0xF9: // SBC Absolute, Y
-                    SubtractWithCarry(GetAbsoluteYValue());
-                    break;
+                #region AND Opcodes
 
                 case 0x29: // AND Immediate
-                    A &= GetImmediateValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                    value = ReadImmediate();
+                    AND(value);
+                    return 2;
 
                 case 0x25: // AND Zero Page
-                    A &= GetZeroPageValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x2D: // AND Absolute
-                    A &= GetAbsoluteValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                    value = ReadZeroPage();
+                    AND(value);
+                    return 3;
 
                 case 0x35: // AND Zero Page, X
-                    A &= GetZeroPageXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                    value = ReadZeroPageX();
+                    AND(value);
+                    return 4;
 
-                case 0x3D: // AND Absolute, X
-                    A &= GetAbsoluteXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x2D: //AND Absolute
+                    value = ReadAbsolute();
+                    AND(value);
+                    return 4;
 
-                case 0x39: // AND Absolute, Y
-                    A &= GetAbsoluteYValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x3D: //AND Absolute, X
+                    value = ReadAbsoluteX(out pageBoundaryCrossed);
+                    AND(value);
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0x09: // ORA Immediate
-                    A |= GetImmediateValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x39: //AND Absolute, Y
+                    value = ReadAbsoluteY(out pageBoundaryCrossed);
+                    AND(value);
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0x05: // ORA Zero Page
-                    A |= GetZeroPageValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x21: //AND (Indirect, X)
+                    value = ReadIndirectX();
+                    AND(value);
+                    return 6;
 
-                case 0x0D: // ORA Absolute
-                    A |= GetAbsoluteValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x31: // AND (Indirect), Y
+                    value = ReadIndirectY(out pageBoundaryCrossed);
+                    AND(value);
+                    return 5 + (pageBoundaryCrossed ? 1 : 0);
 
-                case 0x15: // ORA Zero Page, X
-                    A |= GetZeroPageXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                #endregion
 
-                case 0x1D: // ORA Absolute, X
-                    A |= GetAbsoluteXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                #region ASL Opcodes
 
-                case 0x19: // ORA Absolute, Y
-                    A |= GetAbsoluteYValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x49: // EOR Immediate
-                    A ^= GetImmediateValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x45: // EOR Zero Page
-                    A ^= GetZeroPageValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x4D: // EOR Absolute
-                    A ^= GetAbsoluteValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x55: // EOR Zero Page, X
-                    A ^= GetZeroPageXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x5D: // EOR Absolute, X
-                    A ^= GetAbsoluteXValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x59: // EOR Absolute, Y
-                    A ^= GetAbsoluteYValue();
-                    SetZeroAndNegativeFlags(A);
-                    break;
-
-                case 0x24: // BIT Zero Page
-                    {
-                        byte value = GetZeroPageValue();
-                        P = (byte)((P & ~(FLAG_NEGATIVE | FLAG_OVERFLOW | FLAG_ZERO)) |
-                                   (value & (FLAG_NEGATIVE | FLAG_OVERFLOW)) |
-                                   ((value & A) == 0 ? FLAG_ZERO : 0));
-                        break;
-                    }
-
-                case 0x2C: // BIT Absolute
-                    {
-                        byte value = GetAbsoluteValue();
-                        P = (byte)((P & ~(FLAG_NEGATIVE | FLAG_OVERFLOW | FLAG_ZERO)) |
-                                   (value & (FLAG_NEGATIVE | FLAG_OVERFLOW)) |
-                                   ((value & A) == 0 ? FLAG_ZERO : 0));
-                        break;
-                    }
-
-                case 0xE6: // INC Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        value++;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xF6: // INC Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        value++;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xEE: // INC Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        value++;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xFE: // INC Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        value++;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-
-                case 0xC6: // DEC Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        value--;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xD6: // DEC Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        value--;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xCE: // DEC Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        value--;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0xDE: // DEC Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        value--;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-
-                case 0xE8: // INX
-                    X++;
-                    SetZeroAndNegativeFlags(X);
-                    break;
-
-                case 0xCA: // DEX
-                    X--;
-                    SetZeroAndNegativeFlags(X);
-                    break;
-
-                case 0xC8: // INY
-                    Y++;
-                    SetZeroAndNegativeFlags(Y);
-                    break;
-
-                case 0x88: // DEY
-                    Y--;
-                    SetZeroAndNegativeFlags(Y);
-                    break;
-
-                case 0x0A: // ASL A
-                    P = (byte)((P & ~FLAG_CARRY) | ((A & 0x80) >> 7));
-                    A <<= 1;
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0x0A: //ASL A (Accumulator)
+                    ASL_Accumulator();
+                    return 2;
 
                 case 0x06: // ASL Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value <<= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                    ASL_Memory(GetASLAddrZeroPage());
+                    return 5;
+
                 case 0x16: // ASL Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value <<= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                    ASL_Memory(GetASLAddrZeroPageX());
+                    return 6;
+
                 case 0x0E: // ASL Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value <<= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                    ASL_Memory(ASLAbsolute());
+                    return 6;
+
                 case 0x1E: // ASL Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value <<= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                    ASL_Memory(ASLAbsoluteX());
+                    return 7;
 
-                case 0x4A: // LSR A
-                    P = (byte)((P & ~FLAG_CARRY) | (A & 0x01));
-                    A >>= 1;
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                #endregion
 
-                case 0x46: // LSR Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value >>= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x56: // LSR Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value >>= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x4E: // LSR Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value >>= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x5E: // LSR Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value >>= 1;
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                #region BIT Opcodes
 
-                case 0x2A: // ROL A
-                    {
-                        byte carry = (byte)((P & FLAG_CARRY) >> 0);
-                        P = (byte)((P & ~FLAG_CARRY) | ((A & 0x80) >> 7));
-                        A = (byte)((A << 1) | carry);
-                        SetZeroAndNegativeFlags(A);
-                        break;
-                    }
-                case 0x26: // ROL Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) >> 0);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value = (byte)((value << 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x36: // ROL Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) >> 0);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value = (byte)((value << 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x2E: // ROL Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) >> 0);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value = (byte)((value << 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x3E: // ROL Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) >> 0);
-                        P = (byte)((P & ~FLAG_CARRY) | ((value & 0x80) >> 7));
-                        value = (byte)((value << 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                case 0x24: //BIT Zero Page
+                    BIT(BITZeroPage());
+                    return 3;
 
-                case 0x6A: // ROR A
-                    {
-                        byte carry = (byte)((P & FLAG_CARRY) << 7);
-                        P = (byte)((P & ~FLAG_CARRY) | (A & 0x01));
-                        A = (byte)((A >> 1) | carry);
-                        SetZeroAndNegativeFlags(A);
-                        break;
-                    }
-                case 0x66: // ROR Zero Page
-                    {
-                        byte address = _memory.ReadByte(PC++);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) << 7);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value = (byte)((value >> 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x76: // ROR Zero Page, X
-                    {
-                        byte address = (byte)(_memory.ReadByte(PC++) + X);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) << 7);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value = (byte)((value >> 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x6E: // ROR Absolute
-                    {
-                        ushort address = GetAbsoluteAddress();
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) << 7);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value = (byte)((value >> 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
-                case 0x7E: // ROR Absolute, X
-                    {
-                        ushort baseAddress = GetAbsoluteAddress();
-                        ushort address = (ushort)(baseAddress + X);
-                        byte value = _memory.ReadByte(address);
-                        byte carry = (byte)((P & FLAG_CARRY) << 7);
-                        P = (byte)((P & ~FLAG_CARRY) | (value & 0x01));
-                        value = (byte)((value >> 1) | carry);
-                        _memory.WriteByte(address, value);
-                        SetZeroAndNegativeFlags(value);
-                        break;
-                    }
+                case 0x2C: //Bit Absolute
+                    BIT(BITAbsolute());
+                    return 4;
 
-                case 0x18: // CLC
-                    P &= (byte)(~FLAG_CARRY & 0xFF);
-                    break;
+                #endregion
 
-                case 0x58: // CLI
-                    P &= (byte)(~FLAG_INTERRUPT & 0xFF);
-                    break;
+                #region Branch Opcodes
 
-                case 0xB8: // CLV
-                    P &= (byte)(~FLAG_OVERFLOW & 0xFF);
-                    break;
+                case 0x10: // BPL (Branch if negative = 0)
+                    return BranchIf((P & FLAG_NEGATIVE) == 0);
 
-                case 0xD8: // CLD
-                    P &= (byte)(~FLAG_DECIMAL & 0xFF);
-                    break;
+                case 0x30: // BMI (Branch if negative = 1)
+                    return BranchIf((P & FLAG_NEGATIVE) != 0);
 
-                case 0x38: // SEC
-                    P |= FLAG_CARRY;
-                    break;
+                case 0x50: // BVC (Branch if overflow = 0)
+                    return BranchIf((P & FLAG_OVERFLOW) == 0);
 
-                case 0x78: // SEI
-                    P |= FLAG_INTERRUPT;
-                    break;
+                case 0x70: // BVS (Branch if oferlow = 1)
+                    return BranchIf((P & FLAG_OVERFLOW) != 0);
 
-                case 0xF8: // SED
-                    P |= FLAG_DECIMAL;
-                    break;
+                case 0x90: // BCC (Branch if carry = 0)
+                    return BranchIf((P & FLAG_CARRY) == 0);
 
-                case 0x48: // PHA
-                    _memory.WriteByte((ushort)(0x0100 + SP), A);
-                    SP--;
-                    break;
+                case 0xB0: // BCS (Branch if carry = 1)
+                    return BranchIf((P & FLAG_CARRY) != 0);
 
-                case 0x08: // PHP
-                    _memory.WriteByte((ushort)(0x0100 + SP), (byte)(P | FLAG_BREAK)); // Push P with the break flag set
-                    SP--;
-                    break;
+                case 0xD0: // BNE (Branch if zero = 0)
+                    return BranchIf((P & FLAG_ZERO) == 0);
 
-                case 0x68: // PLA
-                    SP++;
-                    A = _memory.ReadByte((ushort)(0x0100 + SP));
-                    SetZeroAndNegativeFlags(A);
-                    break;
+                case 0xF0: // BEQ (Branch if zero = 1)
+                    return BranchIf((P & FLAG_ZERO) != 0);
 
-                case 0x28: // PLP
-                    SP++;
-                    P = (byte)(_memory.ReadByte((ushort)(0x0100 + SP)) & 0xEF); // Clear the break flag
-                    break;
+                #endregion
 
-                case 0x4C: // JMP Absolute
-                    PC = GetAbsoluteAddress();
-                    break;
-
-                case 0x6C: // JMP Indirect
-                    {
-                        ushort indirectAddress = GetAbsoluteAddress();
-                        ushort targetAddress = (ushort)(_memory.ReadByte(indirectAddress) |
-                                                        (_memory.ReadByte((ushort)((indirectAddress + 1) & 0xFFFF)) << 8));
-                        PC = targetAddress;
-                        break;
-                    }
-
-                case 0x20: // JSR Absolute
-                    {
-                        ushort returnAddress = (ushort)(PC + 1); // Return address is PC + 1
-                        _memory.WriteByte((ushort)(0x0100 + SP), (byte)((returnAddress >> 8) & 0xFF)); // Push high byte
-                        SP--;
-                        _memory.WriteByte((ushort)(0x0100 + SP), (byte)(returnAddress & 0xFF));        // Push low byte
-                        SP--;
-                        PC = GetAbsoluteAddress();
-                        break;
-                    }
-
-                case 0x60: // RTS
-                    {
-                        SP++;
-                        ushort returnAddress = _memory.ReadByte((ushort)(0x0100 + SP));
-                        SP++;
-                        returnAddress |= (ushort)(_memory.ReadByte((ushort)(0x0100 + SP)) << 8);
-                        PC = (ushort)(returnAddress + 1); // Add 1 to point to the instruction after JSR
-                        break;
-                    }
-
-                case 0x40: // RTI
-                    {
-                        SP++;
-                        P = (byte)(_memory.ReadByte((ushort)(0x0100 + SP)) & 0xEF); // Pop `P` (clear Break flag)
-                        SP++;
-                        ushort returnAddress = _memory.ReadByte((ushort)(0x0100 + SP));
-                        SP++;
-                        returnAddress |= (ushort)(_memory.ReadByte((ushort)(0x0100 + SP)) << 8);
-                        PC = returnAddress;
-                        break;
-                    }
+                #region Break Opcode
 
                 case 0x00: // BRK
-                    PC++;
-                    TriggerInterrupt(0xFFFE, true);
-                    break;
+                    return BRK_Instruction();
+
+                #endregion
+
+                #region CMP Opcodes
+
+                case 0xC9: //CMP Immediate
+                    value = ReadImmediate();
+                    CMP(value);
+                    return 2;
+
+                case 0xC5: // CMP Zero Page
+                    value = ReadZeroPage();
+                    CMP(value);
+                    return 3;
+
+                case 0xD5: // CMP Zero Page, X
+                    value = ReadZeroPageX();
+                    CMP(value);
+                    return 4;
+
+                case 0xCD: // CMP Absolute
+                    value = ReadAbsolute();
+                    CMP(value);
+                    return 4;
+
+                case 0xDD: // CMP Absolute, X
+                    value = ReadAbsoluteX(out pageBoundaryCrossed);
+                    CMP(value);
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
+
+                case 0xD9: // CMP Absolute, Y
+                    value = ReadAbsoluteY(out pageBoundaryCrossed);
+                    CMP(value);
+                    return 4 + (pageBoundaryCrossed ? 1 : 0);
+
+                case 0xC1: // CMP (Indirect, X)
+                    value = ReadIndirectX();
+                    CMP(value);
+                    return 6;
+
+                case 0xD1: // CMP (Indirect), Y
+                    value = ReadIndirectY(out pageBoundaryCrossed);
+                    CMP(value);
+                    return 5 + (pageBoundaryCrossed ? 1 : 0);
+
+                #endregion
 
                 default:
                     throw new NotImplementedException($"Opcode {opcode:X2} not implemented");
             }
         }
 
-        public void PrintState()
+        #region ADC Logic
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // ADC logic
+        // Does the actual addition, sets the C, V, Z, N flags, and stores the result in A
+        // ---------------------------------------------------------------------------------------------------------------
+        private void ADC(byte value)
         {
-            Console.WriteLine($"A: {A:X2} X: {X:X2} Y: {Y:X2} PC: {PC:X4} P: {P:X2} [C:{(P & FLAG_CARRY) >> 0} Z:{(P & FLAG_ZERO) >> 1} N:{(P & FLAG_NEGATIVE) >> 7}]");
-        }
+            // Grab the carry bit (0 or 1)
+            int carryIn = (P & FLAG_CARRY) != 0 ? 1 : 0;
 
-        #region HELPER METHODS
+            // Perform unsigned 8-bit addition
+            int sum = A + value + carryIn;
 
-        private void TriggerInterrupt(ushort vectorAddress, bool isBRK = false)
-        {
-            // Push PC onto the stack
-            _memory.WriteByte((ushort)(0x0100 + SP), (byte)((PC >> 8) & 0xFF)); // High byte
-            SP--;
-            _memory.WriteByte((ushort)(0x0100 + SP), (byte)(PC & 0xFF));        // Low byte
-            SP--;
-
-            // Push status register onto the stack
-            byte flags = (byte)(P | (isBRK ? FLAG_BREAK : 0));
-            _memory.WriteByte((ushort)(0x0100 + SP), flags);
-            SP--;
-
-            // Set interrupt disable flag
-            P |= FLAG_INTERRUPT;
-
-            // Set PC to the interrupt vector
-            PC = (ushort)(_memory.ReadByte(vectorAddress) |
-                         (_memory.ReadByte((ushort)(vectorAddress + 1)) << 8));
-        }
-
-        public void TriggerNMI()
-        {
-            TriggerInterrupt(0xFFFA);
-        }
-
-        public void TriggerIRQ()
-        {
-            if ((P & FLAG_INTERRUPT) == 0) // Check if interrupts are enabled
-            {
-                TriggerInterrupt(0xFFFE);
-            }
-        }
-
-        private void SetZeroAndNegativeFlags(byte value)
-        {
-            if (value == 0)
-                P |= FLAG_ZERO;
-            else
-                P &= (byte)(~FLAG_ZERO & 0xFF);
-
-            if ((value & 0x80) != 0)
-                P |= FLAG_NEGATIVE;
-            else
-                P &= (byte)(~FLAG_NEGATIVE & 0xFF);
-        }
-
-        private byte GetImmediateValue()
-        {
-            return _memory.ReadByte(PC++);
-        }
-
-        private byte GetZeroPageValue()
-        {
-            byte address = _memory.ReadByte(PC++);
-            return _memory.ReadByte(address);
-        }
-
-        private byte GetAbsoluteValue()
-        {
-            ushort address = GetAbsoluteAddress();
-            return _memory.ReadByte(address);
-        }
-
-        private ushort GetAbsoluteAddress()
-        {
-            //Combine two bytes from memory into a 16-bit address
-            ushort address = (ushort)(_memory.ReadByte(PC) | (_memory.ReadByte((ushort)(PC + 1)) << 8));
-            PC += 2;
-            return address;
-        }
-
-        private byte GetZeroPageXValue()
-        {
-            byte address = (byte)(_memory.ReadByte(PC++) + X);
-            return _memory.ReadByte(address);
-        }
-
-        private byte GetAbsoluteXValue()
-        {
-            ushort baseAddress = GetAbsoluteAddress();
-            ushort effectiveAddress = (ushort)(baseAddress + X);
-            return _memory.ReadByte(effectiveAddress);
-        }
-
-        private byte GetAbsoluteYValue()
-        {
-            ushort baseAddress = GetAbsoluteAddress();
-            ushort effectiveAddress = (ushort)(baseAddress + Y);
-            return _memory.ReadByte(effectiveAddress);
-        }
-
-        private void WriteZeroPage(byte value)
-        {
-            byte address = _memory.ReadByte(PC++);
-            _memory.WriteByte(address, value);
-        }
-
-        private void WriteAbsolute(byte value)
-        {
-            ushort address = GetAbsoluteAddress();
-            _memory.WriteByte(address, value);
-        }
-
-        private void WriteZeroPageX(byte value)
-        {
-            byte address = (byte)(_memory.ReadByte(PC++) + X);
-            _memory.WriteByte(address, value);
-        }
-
-        private void WriteAbsoluteX(byte value)
-        {
-            ushort baseAddress = GetAbsoluteAddress();
-            _memory.WriteByte((ushort)(baseAddress + X), value);
-        }
-
-        private void WriteAbsoluteY(byte value)
-        {
-            ushort baseAddress = GetAbsoluteAddress();
-            _memory.WriteByte((ushort)(baseAddress + Y), value);
-        }
-
-        private void AddWithCarry(byte value)
-        {
-            int result = A + value + (P & FLAG_CARRY);
-
-            // Set the Carry flag if there's an overflow beyond 8 bits
-            if (result > 0xFF)
+            // Set / clear carry flag if > 0xFF
+            if (sum > 0xFF)
                 P |= FLAG_CARRY;
             else
-                P &= (byte)(~FLAG_CARRY & 0xFF);
+                P &= unchecked((byte)~FLAG_CARRY);
 
-            // Set the Overflow flag for signed arithmetic
-            if (((A ^ value) & 0x80) == 0 && ((A ^ result) & 0x80) != 0)
+            //Overflow check (for signed 8-bit)
+            if (((A ^ value) & 0x80) == 0 && ((A ^ sum) & 0x80) != 0)
                 P |= FLAG_OVERFLOW;
             else
-                P &= (byte)(~FLAG_OVERFLOW & 0xFF);
+                P &= unchecked((byte)~FLAG_OVERFLOW);
 
-            A = (byte)result;
+            //Store the low 8 bits back into A
+            A = (byte)(sum & 0xFF);
 
-            // Update Zero and Negative flags
+            //Update Zero and Negative flags
             SetZeroAndNegativeFlags(A);
         }
 
-        private void Branch()
+        #endregion
+
+        #region AND Logic
+
+        private void AND(byte value)
         {
-            // Signed offset
-            sbyte offset = (sbyte)_memory.ReadByte(PC++);
-            PC = (ushort)(PC + offset);
+            //Perform bitwisee AND with Accumulator
+            A = (byte)(A & value);
+            SetZeroAndNegativeFlags(A);
         }
 
-        private void SubtractWithCarry(byte value)
-        {
-            // Invert the value for two's complement subtraction
-            value = (byte)~value;
+        #endregion
 
-            // Perform addition using ADC logic
-            AddWithCarry(value);
+        #region ASL Logic
+
+        private void ASL_Accumulator()
+        {
+            // Carry = old bit 7
+            byte oldBit7 = (byte)(A & 0x80);
+            if (oldBit7 != 0)
+                P |= FLAG_CARRY;
+            else
+                P &= unchecked((byte)~FLAG_CARRY);
+
+            //Shift left
+            A <<= 1;
+
+            //Set zero and negative
+            SetZeroAndNegativeFlags(A);
+        }
+
+        private void ASL_Memory(ushort address)
+        {
+            byte value = _memory.ReadByte(address);
+
+            //Carry = old bit 7
+            byte oldBit7 = (byte)(value & 0x80);
+            if (oldBit7 != 0)
+                P |= FLAG_CARRY;
+            else
+                P &= unchecked((byte)~FLAG_CARRY);
+
+            value <<= 1;
+
+            _memory.WriteByte(address, value);
+
+            SetZeroAndNegativeFlags(value);
+        }
+
+        #endregion
+
+        #region BIT Logic
+
+        private void BIT(byte value)
+        {
+            //Test bits
+            byte temp = (byte)(A & value);
+
+            //Z set if (A & value) == 0
+            if (temp == 0)
+                P |= FLAG_ZERO;
+            else
+                P &= unchecked((byte)~FLAG_ZERO);
+
+            // N from bit 7 of value
+            if ((value & 0x80) != 0)
+                P |= FLAG_NEGATIVE;
+            else
+                P &= unchecked((byte)~FLAG_NEGATIVE);
+
+            // V from bit 6 of value
+            if ((value & 0x40) != 0)
+                P |= FLAG_OVERFLOW;
+            else
+                P &= unchecked((byte)~FLAG_OVERFLOW);
+        }
+
+        #endregion
+
+        #region Branch Logic
+
+        private int BranchIf(bool condition)
+        {
+            //Always fetch the signed offset
+            sbyte offset = (sbyte)_memory.ReadByte(PC);
+            PC++;
+
+            //Base cost of 2 cycles
+            int cycles = 2;
+
+            if (condition)
+            {
+                cycles++;
+
+                ushort oldPC = PC;
+                ushort newPC = (ushort)(PC + offset);
+
+                PC = newPC;
+
+                // If we crossed page boundary, add another cycle
+                if ((oldPC & 0xFF00) != (newPC & 0xFF00))
+                    cycles++;
+            }
+
+            return cycles;
+
+        }
+
+        #endregion
+
+        #region Break Logic
+
+        private int BRK_Instruction()
+        {
+            // BRK is effectively software interrupt
+            PC++;
+
+            // Set the break flag in P
+            P |= FLAG_BREAK;
+
+            // Push PC High, then PC low
+            PushByte((byte)((PC >> 8) & 0xFF));
+            PushByte((byte)(PC & 0xFF));
+
+            //Push status, but with break flag set and set I
+            PushByte((byte)(P | 0x10));
+
+            P |= FLAG_INTERRUPT;
+
+            // Fetch new PC from IRQ/BRK vector ($FFFE/$FFFF)
+            ushort low = _memory.ReadByte(0xFFFE);
+            ushort high = _memory.ReadByte(0xFFFF);
+            PC = (ushort)(low | (high << 8));
+
+            return 7; // 7 pc cycles
+        }
+
+        private void PushByte(byte value)
+        {
+            _memory.WriteByte((ushort)(0x0100 + SP), value);
+            SP--;
+        }
+
+        #endregion
+
+        #region CMP Logic
+
+        private void CMP(byte value)
+        {
+            int temp = A - value;
+
+            // If A >= value => set carry
+            if (A >= value)
+                P |= FLAG_CARRY;
+            else
+                P &= unchecked((byte)~FLAG_CARRY);
+
+            //If result == 0 => set zero
+            if ((temp & 0xFF) == 0)
+                P |= FLAG_ZERO;
+            else
+                P &= unchecked((byte)~FLAG_ZERO);
+
+            //Negative depends on bit 7 of the result
+            byte result8 = (byte)(temp & 0xFF);
+            if ((result8 & 0x80) != 0)
+                P |= FLAG_NEGATIVE;
+            else
+                P &= unchecked((byte)~FLAG_NEGATIVE);
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // Helper methods for Addressing Modes
+        // ---------------------------------------------------------------------------------------------------------------
+        private byte ReadImmediate()
+        {
+            //For immediate addressing, read the next byte from PC, then increment PC
+            byte val = _memory.ReadByte(PC);
+            PC++;
+            return val;
+        }
+
+        private byte ReadZeroPage()
+        {
+            //Next byte is a zero-page address
+            byte addr = _memory.ReadByte(PC);
+            PC++;
+            return _memory.ReadByte(addr);
+        }
+
+        private byte ReadZeroPageX()
+        {
+            byte addr = _memory.ReadByte(PC);
+            PC++;
+            // wrap around zero page
+            addr = (byte)(addr + X);
+            return _memory.ReadByte(addr);
+        }
+
+        private byte ReadAbsolute()
+        {
+            //16-bit little-endian address
+            ushort addr = _memory.ReadWord(PC);
+            PC += 2;
+            return _memory.ReadByte(addr);
+        }
+
+        private byte ReadAbsoluteX(out bool pageBoundaryCrossed)
+        {
+            ushort baseAddr = _memory.ReadWord(PC);
+            PC += 2;
+            ushort finalAddr = (ushort)(baseAddr + X);
+
+            // If the high byte changes, page boundary has been crossed
+            pageBoundaryCrossed = ((baseAddr & 0xFF00) != (finalAddr & 0xFF00));
+
+            return _memory.ReadByte(finalAddr);
+        }
+
+        private byte ReadAbsoluteY(out bool pageBoundaryCrossed)
+        {
+            ushort baseAddr = _memory.ReadWord(PC);
+            PC += 2;
+            ushort finalAddr = (ushort)(baseAddr + Y);
+
+            pageBoundaryCrossed = ((baseAddr & 0xFF00) != (finalAddr & 0xFF00));
+
+            return _memory.ReadByte(finalAddr);
+        }
+
+        private byte ReadIndirectX()
+        {
+            //Fetch zero-page pointer from next byte, add X (wrap in zero page), read 16-bit address from pointer, read final data
+            byte zp = _memory.ReadByte(PC);
+            PC++;
+            byte ptr = (byte)(zp + X);
+
+            ushort addr = (ushort)(_memory.ReadByte(ptr) | (_memory.ReadByte((byte)(ptr + 1)) << 8));
+            return _memory.ReadByte(addr);
+        }
+
+        private byte ReadIndirectY(out bool pageBoundaryCrossed)
+        {
+            //Fetch zero-page pointer from next byte, read 16 bit address from pointer, add Y, read final data from address
+            byte zp = _memory.ReadByte(PC);
+            PC++;
+
+            ushort baseAddr = (ushort)(_memory.ReadByte(zp) | (_memory.ReadByte((byte)(zp + 1)) << 8));
+            ushort finalAddr = (ushort)(baseAddr + Y);
+
+            pageBoundaryCrossed = ((baseAddr & 0xFF00) != (finalAddr & 0xFF00));
+            return _memory.ReadByte(finalAddr);
+        }
+
+        private byte GetASLAddrZeroPage()
+        {
+            byte addr = _memory.ReadByte(PC);
+            PC++;
+            return addr;
+        }
+
+        private byte GetASLAddrZeroPageX()
+        {
+            byte zeroPageAddr = _memory.ReadByte(PC);
+            PC++;
+            byte addr = (byte)(zeroPageAddr + X);
+            return addr;
+        }
+
+        private ushort ASLAbsolute()
+        {
+            ushort addr = _memory.ReadWord(PC);
+            PC += 2;
+            return addr;
+        }
+
+        private ushort ASLAbsoluteX()
+        {
+            ushort baseAddr = _memory.ReadWord(PC);
+            PC += 2;
+            ushort finalAddr = (ushort)(baseAddr + X);
+            return finalAddr;
+        }
+
+        private byte BITZeroPage()
+        {
+            byte addr = _memory.ReadByte(PC);
+            PC++;
+            byte value = _memory.ReadByte(addr);
+            return value;
+        }
+
+        private byte BITAbsolute()
+        {
+            ushort addr = _memory.ReadWord(PC);
+            PC += 2;
+            byte value = _memory.ReadByte(addr);
+            return value; 
+        }
+
+        #endregion
+
+        #region Flag Updates
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // Updating Flags
+        // ---------------------------------------------------------------------------------------------------------------
+        private void SetZeroAndNegativeFlags(byte value)
+        {
+            //Zero flag
+            if (value == 0)
+                P |= FLAG_ZERO;
+            else
+                P &= unchecked((byte)~FLAG_ZERO);
+
+            // Negative flag
+            if ((value & 0x80) != 0)
+                P |= FLAG_NEGATIVE;
+            else
+                P &= unchecked((byte)~FLAG_NEGATIVE);
         }
 
         #endregion
