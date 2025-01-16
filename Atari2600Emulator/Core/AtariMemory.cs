@@ -8,114 +8,156 @@ namespace Atari2600Emulator.Core
 {
     internal class AtariMemory
     {
-        private byte[] RAM;     //128 bytes of RIOT RAM
-        private byte[] ROM;     //ROM data
-        private byte[] TIA;     //TIA Registers
-        public byte[] VideoBuffer { get; private set; }
+        //---------------------------------------------------------------------------------------
+        //Memory Regions
+        //---------------------------------------------------------------------------------------
+        private TIA _tia; // 32 bytes: 0x0000 - 0x001F
+        private RIOT _riot; // 96 bytes; 0x0020 - 0x007F
+        private byte[] _rom; // 4KB: 0x1000 - 0x1FFF 
 
-        public AtariMemory(byte[] romData)
+        //---------------------------------------------------------------------------------------
+        //Events
+        //---------------------------------------------------------------------------------------
+        //Event triggered when a TIA or RIOT register is written to, provides address and value written
+        public event Action<ushort, byte> OnTIARegisterWrite;
+        public event Action<ushort, byte> OnRIOTRegisterWrite;
+
+        //---------------------------------------------------------------------------------------
+        //Constructor
+        //---------------------------------------------------------------------------------------
+        public AtariMemory()
         {
-            //Initialize memory regions
-            RAM = new byte[128];
-            TIA = new byte[128];
-            ROM = new byte[4096];
-            VideoBuffer = new byte[160 * 192];
-            LoadROM(romData);
+            _tia = new TIA();
+            _riot = new RIOT();
+            _rom = new byte[0x1000];
+
+            _tia.OnRegisterWrite += HandleTIARegisterWrite;
+            _riot.OnRegisterWrite += HandleRIOTRegisterWrite;
         }
 
+        //---------------------------------------------------------------------------------------
+        //Load ROM Data
+        //---------------------------------------------------------------------------------------
         public void LoadROM(byte[] romData)
         {
-            Array.Clear(ROM, 0, ROM.Length);
+            if (romData == null)
+                throw new ArgumentNullException(nameof(romData), "ROM data cannot be null.");
 
-            int lengthToCopy = Math.Min(romData.Length, ROM.Length);
-            Array.Copy(romData, 0, ROM, 0, lengthToCopy);
+            Array.Clear(_rom, 0, _rom.Length);
+
+            int lengthToCopy = Math.Min(romData.Length, _rom.Length);
+            Array.Copy(romData, 0, _rom, 0, lengthToCopy);
         }
 
+        //---------------------------------------------------------------------------------------
+        //Read Operations
+        //---------------------------------------------------------------------------------------
         public byte ReadByte(ushort address)
         {
-            // Mask off top 3 bits (6507 only has 13 address lines)
+            // Mask off top 3 bits (6507 has 13 address lines: 0x0000-0x1FFF)
             ushort effAddr = (ushort)(address & 0x1FFF);
 
-            if (effAddr < 0x0080)
+            if (effAddr < 0x0020)
             {
-                // TIA
-                return TIA[effAddr];
+                // TIA Registers: 0x0000-0x001F
+                return _tia.ReadRegister(effAddr);
             }
-            else if (effAddr < 0x0100)
+            else if (effAddr < 0x0080)
             {
-                // RAM
-                return RAM[effAddr - 0x0080];
-            }
-            else if (effAddr < 0x0200)
-            {
-                // Another RAM mirror, etc.
-                return RAM[(effAddr - 0x0080) % 128];
+                // RIOT Registers and RAM: 0x0020-0x007F
+                return _riot.ReadRegister((ushort)(effAddr - 0x0020));
             }
             else if (effAddr >= 0x1000 && effAddr <= 0x1FFF)
             {
-                // 4K Cartridge region
+                // Cartridge ROM: 0x1000-0x1FFF
                 ushort romOffset = (ushort)(effAddr - 0x1000);
-                return ROM[romOffset];
+                if (romOffset < _rom.Length)
+                    return _rom[romOffset];
+                else
+                    return 0xFF; // Unmapped ROM area
             }
             else
             {
-                // Possibly unused or mirrored to something else
+                // Unmapped Addresses: 0x0080-0x0FFF and 0x2000-0x1FFF (wrapped)
+                // Typically return 0xFF or handle as needed
                 return 0xFF;
             }
         }
 
         public ushort ReadWord(ushort address)
         {
-            //Read low byte
             byte low = ReadByte(address);
-
-            //Read high byte
             byte high = ReadByte((ushort)(address + 1));
-
-            // Combine low & high and return 16-bit value
             return (ushort)(low | (high << 8));
         }
 
+        //---------------------------------------------------------------------------------------
+        //Write Operations
+        //---------------------------------------------------------------------------------------
         public void WriteByte(ushort address, byte value)
         {
-            if (address <= 0x007F)
+            ushort effAddr = (ushort)(address & 0x1FFF);
+
+            if (effAddr < 0x0020)
             {
-                // TIA
-                TIA[address] = value;
-                // Possibly handle specific registers here...
+                // TIA Registers: 0x0000-0x001F
+                _tia.WriteRegister(effAddr, value);
+                // Event handling is managed within TIA class
             }
-            else if (address >= 0x0080 && address <= 0x01FF)
+            else if (effAddr < 0x0080)
             {
-                // Mirror addresses 0x0080–0x01FF into RAM
-                RAM[(address - 0x0080) % 128] = value;
+                // RIOT Registers and RAM: 0x0020-0x007F
+                _riot.WriteRegister((ushort)(effAddr - 0x0020), value);
+                // Event handling is managed within RIOT class
             }
-            else if (address >= 0x1000 && address <= 0x107F)
+            else if (effAddr >= 0x1000 && effAddr <= 0x1FFF)
             {
-                // Another RAM mirror region
-                RAM[(address - 0x1000) % 128] = value;
-            }
-            else if (address >= 0xF000 && address <= 0xFFFF)
-            {
-                // Usually ROM is read-only, but bank-switch carts might need special handling.
-                // For a simple 4K cart, do nothing or throw if you like:
-                // throw new InvalidOperationException($"Can't write to ROM at {address:X4}");
-            }
-            else if (address >= 0xD000 && address <= 0xFFFF)
-            {
-                // Usually no-op (ROM is read-only), or handle bankswitch logic if needed.
+                // Cartridge ROM: 0x1000-0x1FFF is read-only in standard cartridges
+                // Implement bank switching here if using mappers or special cartridges
+                // For standard 4KB ROMs, writes are ignored or can throw an exception
+
+                // Example: Ignoring writes
+                // Do nothing
+
+                // Alternatively, throw an exception
+                // throw new InvalidOperationException($"Cannot write to ROM at address {effAddr:X4}");
             }
             else
             {
-                throw new ArgumentOutOfRangeException(nameof(address),
-                    $"Address {address:X4} is out of range.");
+                // Unmapped Addresses: 0x0080-0x0FFF and 0x2000-0x1FFF (wrapped)
+                // Typically, writes are ignored or can log a warning
+                // Do nothing
             }
         }
 
+        //---------------------------------------------------------------------------------------
+        //Event Handlers
+        //---------------------------------------------------------------------------------------
+        private void HandleTIARegisterWrite(ushort address, byte value)
+        {
+            // Raise event to notify subscribers (e.g., Video class)
+            OnTIARegisterWrite?.Invoke(address, value);
+        }
+
+        private void HandleRIOTRegisterWrite(ushort address, byte value)
+        {
+            // Raise event to notify subscribers (e.g., Input class)
+            OnRIOTRegisterWrite?.Invoke(address, value);
+        }
+
+        public void Reset()
+        {
+            // Clear TIA and RIOT registers
+            _tia.Reset();
+            _riot.Reset();
+
+            // Clear ROM if needed (optional)
+            Array.Clear(_rom, 0, _rom.Length);
+        }
 
         public void ClearVideoBuffer()
         {
-            Array.Clear(VideoBuffer, 0, VideoBuffer.Length);
+            _tia.ClearVideoBuffer();
         }
-
     }
 }
