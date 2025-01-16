@@ -39,6 +39,20 @@ namespace Atari2600Emulator.Core
         public CPU6507(AtariMemory memory)
         {
             _memory = memory;
+            Reset();
+        }
+
+        public void Reset()
+        {
+            A = 0;
+            X = 0;
+            Y = 0;
+            SP = 0xFF;
+            P = 0x20;
+
+            byte low = _memory.ReadByte(0xFFFC);
+            byte high = _memory.ReadByte(0xFFFD);
+            PC = (ushort)(low | (high << 8));
         }
 
         // ---------------------------------------------------------------------------------------------------------------
@@ -313,7 +327,7 @@ namespace Atari2600Emulator.Core
                     return 5;
 
                 case 0xD6: // DEC Zero Page, X
-                    DEC_Memory(DECZeroPageX());
+                    DEC_Memory(GetZeroPageXAddress());
                     return 6;
 
                 case 0xCE: //DEC Absolute
@@ -446,11 +460,11 @@ namespace Atari2600Emulator.Core
                 #region INC Opcodes
 
                 case 0xE6: // INC Zero Page
-                    INC_Memory(ReadImmediate());
+                    INC_Memory(ReadZeroPage());
                     return 5;
 
                 case 0xF6: // INC Zero Page, X
-                    INC_Memory(DECZeroPageX());
+                    INC_Memory(GetZeroPageXAddress());
                     return 6;
 
                 case 0xEE: //INC Absolute
@@ -917,7 +931,7 @@ namespace Atari2600Emulator.Core
 
                 case 0x96: // STX Zero Page, Y
                     STX(ReadZeroPageY(), X);
-                    return 3;
+                    return 4;
 
                 case 0x8E: // STX Absolute
                     STX(ReadAbsolute(), X);
@@ -1515,8 +1529,10 @@ namespace Atari2600Emulator.Core
 
         private void RTI()
         {
-            // Pull Processor Status (flags) from stack
-            P = PopByte();
+            byte status = PopByte();
+            status &= unchecked((byte)~FLAG_BREAK);
+            status &= unchecked((byte)~0x20);
+            P = status;
 
             // Pull Program Counter low byte
             byte pcLow = PopByte();
@@ -1549,7 +1565,7 @@ namespace Atari2600Emulator.Core
             {
                 int a = (A >> 4) * 10 + (A & 0x0F);
                 int m = (value >> 4) * 10 + (value & 0x0F);
-                int c = (P * FLAG_CARRY) != 0 ? 1 : 0;
+                int c = (P & FLAG_CARRY) != 0 ? 1 : 0;
 
                 int result = a - m - (1 - c);
 
@@ -1566,7 +1582,7 @@ namespace Atari2600Emulator.Core
                 if (A == 0)
                     P |= FLAG_ZERO;
                 else
-                    P &= unchecked((byte)~FLAG_NEGATIVE);
+                    P &= unchecked((byte)~FLAG_ZERO);
 
                 if ((A & 0x80) != 0)
                     P |= FLAG_NEGATIVE;
@@ -1755,7 +1771,7 @@ namespace Atari2600Emulator.Core
             return zpAddr;
         }
 
-        private byte DECZeroPageX()
+        private byte GetZeroPageXAddress()
         {
             byte zpAddr = _memory.ReadByte(PC);
             PC++;
